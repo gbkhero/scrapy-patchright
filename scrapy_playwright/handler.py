@@ -244,7 +244,17 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         context_kwargs = context_kwargs or {}
         persistent = remote = False
         if context_kwargs.get(PERSISTENT_CONTEXT_PATH_KEY):
+            storage_state = None
+            has_storage_state = 'storage_state' in context_kwargs
+            if has_storage_state:
+                storage_state = context_kwargs.get('storage_state')
+                del context_kwargs['storage_state']
             context = await self.browser_type.launch_persistent_context(**context_kwargs)
+            if storage_state:                              
+                if storage_state.get('cookies'):
+                    # inject cookies.
+                    await context.clear_cookies()
+                    await context.add_cookies(storage_state.get('cookies'))
             persistent = True
         elif self.config.cdp_url:
             await self._maybe_connect_remote_devtools()
