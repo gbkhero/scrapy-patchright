@@ -420,20 +420,22 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         # Let's track only the first request that matches the above conditions.
         initial_request_done = asyncio.Event()
 
-        await page.unroute("**")
-        await page.route(
-            "**",
-            self._make_request_handler(
-                context_name=context_name,
-                method=request.method,
-                url=request.url,
-                headers=request.headers,
-                body=request.body,
-                encoding=request.encoding,
-                spider=spider,
-                initial_request_done=initial_request_done,
-            ),
-        )
+        if not request.meta.get('dont_route'):
+            # 如果不希望指定route，则指定"dont_route"
+            await page.unroute("**")
+            await page.route(
+                "**",
+                self._make_request_handler(
+                    context_name=context_name,
+                    method=request.method,
+                    url=request.url,
+                    headers=request.headers,
+                    body=request.body,
+                    encoding=request.encoding,
+                    spider=spider,
+                    initial_request_done=initial_request_done,
+                ),
+            )
 
         await _maybe_execute_page_init_callback(
             page=page, request=request, context_name=context_name, spider=spider
