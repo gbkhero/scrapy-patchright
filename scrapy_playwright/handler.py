@@ -98,6 +98,7 @@ class Config:
     restart_disconnected_browser: bool
     target_closed_max_retries: int = 3
     use_threaded_loop: bool = False
+    cdp_reuse_context: bool = False
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "Config":
@@ -123,6 +124,7 @@ class Config:
             ),
             use_threaded_loop=platform.system() == "Windows"
             or settings.getbool("_PLAYWRIGHT_THREADED_LOOP", False),
+            cdp_reuse_context=settings.get("PLAYWRIGHT_CDP_REUSE_CONTEXT"),
         )
         cfg.cdp_kwargs.pop("endpoint_url", None)
         cfg.connect_kwargs.pop("ws_endpoint", None)
@@ -258,11 +260,17 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             persistent = True
         elif self.config.cdp_url:
             await self._maybe_connect_remote_devtools()
-            context = await self.browser.new_context(**context_kwargs)
+            if self.config.cdp_reuse_context:
+                context = self.browser.contexts[0]
+            else:
+                context = await self.browser.new_context(**context_kwargs)
             remote = True
         elif self.config.connect_url:
             await self._maybe_connect_remote()
-            context = await self.browser.new_context(**context_kwargs)
+            if self.config.cdp_reuse_context:
+                context = self.browser.contexts[0]
+            else:
+                context = await self.browser.new_context(**context_kwargs)
             remote = True
         else:
             await self._maybe_launch_browser()
