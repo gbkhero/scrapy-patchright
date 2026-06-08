@@ -444,6 +444,8 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                     initial_request_done=initial_request_done,
                 ),
             )
+            # apply route page methods.
+            await self._apply_page_methods(page, request, spider, only_route_and_remove=True)
 
         await _maybe_execute_page_init_callback(
             page=page, request=request, context_name=context_name, spider=spider
@@ -623,12 +625,16 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
 
         return response, download if download else None
 
-    async def _apply_page_methods(self, page: Page, request: Request, spider: Spider) -> None:
+    async def _apply_page_methods(self, page: Page, request: Request, spider: Spider, only_route_and_remove=False) -> None:
         context_name = request.meta.get("playwright_context")
         page_methods = request.meta.get("playwright_page_methods") or ()
         if isinstance(page_methods, dict):
             page_methods = page_methods.values()
-        for pm in page_methods:
+        if only_route_and_remove:
+            page_methods = list(filter(lambda x: x.method=='route', page_methods))
+        else:
+            page_methods = list(filter(lambda x: x.method!='route', page_methods))
+        for pm in page_methods:            
             if isinstance(pm, PageMethod):
                 try:
                     if callable(pm.method):
