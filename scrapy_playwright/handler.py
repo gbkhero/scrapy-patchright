@@ -210,16 +210,25 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                 self.stats.inc_value("playwright/browser_count")
                 self.browser.on("disconnected", self._browser_disconnected_callback)
 
-    async def _maybe_connect_remote_devtools(self) -> None:
+    async def _maybe_connect_remote_devtools(self, cdp_url=None, cdp_kwargs={}) -> None:
         async with self.browser_launch_lock:
             if not hasattr(self, "browser"):
-                logger.info("Connecting using CDP: %s", self.config.cdp_url)
-                self.browser = await self.browser_type.connect_over_cdp(
-                    self.config.cdp_url, **self.config.cdp_kwargs
-                )
-                logger.info("Connected using CDP: %s", self.config.cdp_url)
-                self.stats.inc_value("playwright/browser_count")
-                self.browser.on("disconnected", self._browser_disconnected_callback)
+                if cdp_url:
+                    logger.info("Connecting using CDP: %s", cdp_url)
+                    self.browser = await self.browser_type.connect_over_cdp(
+                        cdp_url, **cdp_kwargs
+                    )
+                    logger.info("Connected using CDP: %s", cdp_url)
+                    self.stats.inc_value("playwright/browser_count")
+                    self.browser.on("disconnected", self._browser_disconnected_callback)
+                else:
+                    logger.info("Connecting using CDP: %s", self.config.cdp_url)
+                    self.browser = await self.browser_type.connect_over_cdp(
+                        self.config.cdp_url, **self.config.cdp_kwargs
+                    )
+                    logger.info("Connected using CDP: %s", self.config.cdp_url)
+                    self.stats.inc_value("playwright/browser_count")
+                    self.browser.on("disconnected", self._browser_disconnected_callback)
 
     async def _maybe_connect_remote(self) -> None:
         async with self.browser_launch_lock:
@@ -258,6 +267,16 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                     await context.clear_cookies()
                     await context.add_cookies(storage_state.get('cookies'))
             persistent = True
+        elif context_kwargs.get("cdp_url"):
+            await self._maybe_connect_remote_devtools(cdp_url=context_kwargs.get("cdp_url"), cdp_kwargs=context_kwargs.get('cdp_kwargs') or {})
+            context_kwargs.pop("cdp_url")
+            if 'cdp_kwargs' in context_kwargs:
+                context_kwargs.pop("cdp_kwargs")
+            if self.config.cdp_reuse_context:
+                context = self.browser.contexts[0]
+            else:
+                context = await self.browser.new_context(**context_kwargs)
+            remote = True
         elif self.config.cdp_url:
             await self._maybe_connect_remote_devtools()
             if self.config.cdp_reuse_context:
