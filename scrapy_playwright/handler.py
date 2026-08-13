@@ -12,6 +12,7 @@ from typing import Awaitable, Callable, Dict, Optional, Tuple, Type, TypeVar, Un
 
 from patchright._impl._errors import TargetClosedError
 from patchright.async_api import (
+    Browser,
     BrowserContext,
     BrowserType,
     Download as PlaywrightDownload,
@@ -61,6 +62,13 @@ logger = logging.getLogger("scrapy-playwright")
 DEFAULT_BROWSER_TYPE = "chromium"
 DEFAULT_CONTEXT_NAME = "default"
 PERSISTENT_CONTEXT_PATH_KEY = "user_data_dir"
+
+
+@dataclass
+class BrowserWrapper:
+    browser: Union[Browser, None]
+    launch_lock: asyncio.Lock
+    disconnected: bool = False
 
 
 @dataclass
@@ -151,6 +159,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
 
         self.browser_launch_lock = asyncio.Lock()
         self.context_launch_lock = asyncio.Lock()
+        self.browser_pool: Dict[str, BrowserWrapper] = {}
         self.context_wrappers: Dict[str, BrowserContextWrapper] = {}
         if self.config.max_contexts:
             self.context_semaphore = asyncio.Semaphore(value=self.config.max_contexts)
@@ -201,51 +210,53 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             logger.info("Startup context(s) launched")
             self.stats.set_value("playwright/page_count", self._get_total_page_count())
 
-    async def _maybe_launch_browser(self) -> None:
-        async with self.browser_launch_lock:
-            if not hasattr(self, "browser"):
+    async def _maybe_launch_browser(self, browser_id: str = "default") -> None:        
+        bw = await self._get_or_create_browser_wrapper(browser_id)
+        async with self.browser_launch_lock:            
+            if not bw.browser:
                 logger.info("Launching browser %s", self.browser_type.name)
-                self.browser = await self.browser_type.launch(**self.config.launch_options)
+                bw.browser = await self.browser_type.launch(**self.config.launch_options)
                 logger.info("Browser %s launched", self.browser_type.name)
                 self.stats.inc_value("playwright/browser_count")
-                self.browser.on("disconnected", self._browser_disconnected_callback)
+                bw.browser.on("disconnected", self._browser_disconnected_callback, browser_id=browser_id)
 
-    async def _maybe_connect_remote_devtools(self, cdp_url=None, cdp_kwargs={}) -> None:
+    async def _maybe_connect_remote_devtools(self, browser_id: str = "default", cdp_url=None, cdp_kwargs={}) -> None:
+        bw = await self._get_or_create_browser_wrapper(browser_id)
         async with self.browser_launch_lock:
-            if not hasattr(self, "browser"):
+            if not bw.browser:
                 if cdp_url:
                     logger.info("Connecting using CDP: %s", cdp_url)
-                    self.browser = await self.browser_type.connect_over_cdp(
+                    bw.browser = await self.browser_type.connect_over_cdp(
                         cdp_url, **cdp_kwargs
                     )
                     logger.info("Connected using CDP: %s", cdp_url)
-                    self.stats.inc_value("playwright/browser_count")
-                    self.browser.on("disconnected", self._browser_disconnected_callback)
                 else:
                     logger.info("Connecting using CDP: %s", self.config.cdp_url)
-                    self.browser = await self.browser_type.connect_over_cdp(
+                    bw.browser = await self.browser_type.connect_over_cdp(
                         self.config.cdp_url, **self.config.cdp_kwargs
                     )
                     logger.info("Connected using CDP: %s", self.config.cdp_url)
-                    self.stats.inc_value("playwright/browser_count")
-                    self.browser.on("disconnected", self._browser_disconnected_callback)
+                self.stats.inc_value("playwright/browser_count")
+                bw.browser.on("disconnected", self._browser_disconnected_callback, browser_id=browser_id)
 
-    async def _maybe_connect_remote(self) -> None:
+    async def _maybe_connect_remote(self, browser_id: str = "default") -> None:
+        bw = await self._get_or_create_browser_wrapper(browser_id)
         async with self.browser_launch_lock:
-            if not hasattr(self, "browser"):
+            if not bw.browser:
                 logger.info("Connecting to remote Playwright")
-                self.browser = await self.browser_type.connect(
+                bw.browser = await self.browser_type.connect(
                     self.config.connect_url, **self.config.connect_kwargs
                 )
                 logger.info("Connected to remote Playwright")
                 self.stats.inc_value("playwright/browser_count")
-                self.browser.on("disconnected", self._browser_disconnected_callback)
+                bw.browser.on("disconnected", self._browser_disconnected_callback, browser_id=browser_id)
 
     async def _create_browser_context(
         self,
         name: str,
         context_kwargs: Optional[dict],
         spider: Optional[Spider] = None,
+        browser_id: str = "default",
     ) -> BrowserContextWrapper:
         """Create a new context, also launching a local browser or connecting
         to a remote one if necessary.
@@ -254,6 +265,8 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             await self.context_semaphore.acquire()
         context_kwargs = context_kwargs or {}
         persistent = remote = False
+        bw = await self._get_or_create_browser_wrapper(browser_id)
+        browser = bw.browser
         if context_kwargs.get(PERSISTENT_CONTEXT_PATH_KEY):
             storage_state = None
             has_storage_state = 'storage_state' in context_kwargs
@@ -268,32 +281,32 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                     await context.add_cookies(storage_state.get('cookies'))
             persistent = True
         elif context_kwargs.get("cdp_url"):
-            await self._maybe_connect_remote_devtools(cdp_url=context_kwargs.get("cdp_url"), cdp_kwargs=context_kwargs.get('cdp_kwargs') or {})
+            await self._maybe_connect_remote_devtools(browser_id=browser_id, cdp_url=context_kwargs.get("cdp_url"), cdp_kwargs=context_kwargs.get('cdp_kwargs') or {})
             context_kwargs.pop("cdp_url")
             if 'cdp_kwargs' in context_kwargs:
                 context_kwargs.pop("cdp_kwargs")
             if self.config.cdp_reuse_context:
-                context = self.browser.contexts[0]
+                context = browser.contexts[0]
             else:
-                context = await self.browser.new_context(**context_kwargs)
+                context = await browser.new_context(**context_kwargs)
             remote = True
         elif self.config.cdp_url:
-            await self._maybe_connect_remote_devtools()
+            await self._maybe_connect_remote_devtools(browser_id=browser_id)
             if self.config.cdp_reuse_context:
-                context = self.browser.contexts[0]
+                context = browser.contexts[0]
             else:
-                context = await self.browser.new_context(**context_kwargs)
+                context = await browser.new_context(**context_kwargs)
             remote = True
         elif self.config.connect_url:
-            await self._maybe_connect_remote()
+            await self._maybe_connect_remote(browser_id=browser_id)
             if self.config.cdp_reuse_context:
-                context = self.browser.contexts[0]
+                context = browser.contexts[0]
             else:
-                context = await self.browser.new_context(**context_kwargs)
+                context = await browser.new_context(**context_kwargs)
             remote = True
         else:
-            await self._maybe_launch_browser()
-            context = await self.browser.new_context(**context_kwargs)
+            await self._maybe_launch_browser(browser_id=browser_id)
+            context = await browser.new_context(**context_kwargs)
 
         context.on(
             "close", self._make_close_browser_context_callback(name, persistent, remote, spider)
@@ -326,6 +339,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
     async def _create_page(self, request: Request, spider: Spider) -> Page:
         """Create a new page in a context, also creating a new context if necessary."""
         context_name = request.meta.setdefault("playwright_context", DEFAULT_CONTEXT_NAME)
+        target_browser_id = self._get_browser_id(request)
         # this block needs to be locked because several attempts to launch a context
         # with the same name could happen at the same time from different requests
         async with self.context_launch_lock:
@@ -335,6 +349,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                     name=context_name,
                     context_kwargs=request.meta.get("playwright_context_kwargs"),
                     spider=spider,
+                    browser_id=target_browser_id,
                 )
 
         await ctx_wrapper.semaphore.acquire()
@@ -397,9 +412,14 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         with suppress(TargetClosedError):
             await asyncio.gather(*[ctx.context.close() for ctx in self.context_wrappers.values()])
         self.context_wrappers.clear()
-        if hasattr(self, "browser"):
-            logger.info("Closing browser")
-            await self.browser.close()
+        close_browser_coros = []
+        for bid, bw in self.browser_pool.items():
+            if bw.browser:
+                logger.info("Closing browser[%s]", bid)
+                close_browser_coros.append(bw.browser.close())
+        if close_browser_coros:
+            await asyncio.gather(*close_browser_coros)
+        self.browser_pool.clear()
         if self.playwright_context_manager:
             await self.playwright_context_manager.__aexit__()
         if self.playwright:
@@ -703,7 +723,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         self.stats.inc_value(f"{stats_prefix}/resource_type/{response.request.resource_type}")
         self.stats.inc_value(f"{stats_prefix}/method/{response.request.method}")
 
-    async def _browser_disconnected_callback(self) -> None:
+    async def _browser_disconnected_callback(self, browser_id: str) -> None:
         close_context_coros = [
             ctx_wrapper.context.close() for ctx_wrapper in self.context_wrappers.values()
         ]
@@ -711,8 +731,9 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         with suppress(TargetClosedError):
             await asyncio.gather(*close_context_coros)
         logger.debug("Browser disconnected")
-        if self.config.restart_disconnected_browser:
-            del self.browser
+        if self.config.restart_disconnected_browser:            
+            if browser_id in self.browser_pool:
+                del self.browser_pool[browser_id]
 
     def _make_close_page_callback(self, context_name: str) -> Callable:
         def close_page_callback() -> None:
@@ -879,6 +900,23 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                     raise
 
         return _request_handler
+    
+    def _get_browser_id(self, request: Optional[Request] = None) -> str:
+        """获取当前请求绑定的浏览器标识，兼容旧逻辑"""
+        if request and "playwright_browser_id" in request.meta:
+            return request.meta["playwright_browser_id"]
+        return "default"
+
+    async def _get_or_create_browser_wrapper(self, browser_id: str) -> BrowserWrapper:
+        """获取/初始化指定ID的浏览器包装实例，替换原有直接访问self.browser"""
+        async with self.browser_launch_lock:
+            if browser_id not in self.browser_pool:
+                # 新建浏览器包装，每个浏览器独立锁
+                self.browser_pool[browser_id] = BrowserWrapper(
+                    browser=None,
+                    launch_lock=asyncio.Lock()
+                )
+            return self.browser_pool[browser_id]
 
 
 def _attach_page_event_handlers(
