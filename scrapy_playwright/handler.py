@@ -218,7 +218,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                 bw.browser = await self.browser_type.launch(**self.config.launch_options)
                 logger.info("Browser %s launched", self.browser_type.name)
                 self.stats.inc_value("playwright/browser_count")
-                bw.browser.on("disconnected", self._browser_disconnected_callback, browser_id=browser_id)
+                bw.browser.on("disconnected", partial(self._browser_disconnected_callback, browser_id=browser_id))
 
     async def _maybe_connect_remote_devtools(self, browser_id: str = "default", cdp_url=None, cdp_kwargs={}) -> None:
         bw = await self._get_or_create_browser_wrapper(browser_id)
@@ -237,7 +237,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                     )
                     logger.info("Connected using CDP: %s", self.config.cdp_url)
                 self.stats.inc_value("playwright/browser_count")
-                bw.browser.on("disconnected", self._browser_disconnected_callback, browser_id=browser_id)
+                bw.browser.on("disconnected", partial(self._browser_disconnected_callback, browser_id=browser_id))
 
     async def _maybe_connect_remote(self, browser_id: str = "default") -> None:
         bw = await self._get_or_create_browser_wrapper(browser_id)
@@ -249,7 +249,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                 )
                 logger.info("Connected to remote Playwright")
                 self.stats.inc_value("playwright/browser_count")
-                bw.browser.on("disconnected", self._browser_disconnected_callback, browser_id=browser_id)
+                bw.browser.on("disconnected", partial(self._browser_disconnected_callback, browser_id=browser_id))
 
     async def _create_browser_context(
         self,
