@@ -725,7 +725,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         self.stats.inc_value(f"{stats_prefix}/resource_type/{response.request.resource_type}")
         self.stats.inc_value(f"{stats_prefix}/method/{response.request.method}")
 
-    async def _browser_disconnected_callback(self, browser_id: str) -> None:
+    async def _browser_disconnected_callback(self, _, browser_id: str) -> None:
         close_context_coros = [
             ctx_wrapper.context.close() for ctx_wrapper in self.context_wrappers.values()
         ]
