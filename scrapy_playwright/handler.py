@@ -306,6 +306,8 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             remote = True
         else:
             await self._maybe_launch_browser(browser_id=browser_id)
+            bw = self.browser_pool[browser_id]
+            browser = bw.browser
             context = await browser.new_context(**context_kwargs)
 
         context.on(
