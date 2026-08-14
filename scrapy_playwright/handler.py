@@ -76,6 +76,7 @@ class BrowserContextWrapper:
     context: BrowserContext
     semaphore: asyncio.Semaphore
     persistent: bool
+    browser_id: str
 
 
 @dataclass
@@ -340,6 +341,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             context=context,
             semaphore=asyncio.Semaphore(value=self.config.max_pages_per_context),
             persistent=persistent,
+            browser_id=browser_id,
         )
         self._set_max_concurrent_context_count()
         return self.context_wrappers[name]
@@ -732,13 +734,24 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         self.stats.inc_value(f"{stats_prefix}/method/{response.request.method}")
 
     async def _browser_disconnected_callback(self, _, browser_id: str) -> None:
-        close_context_coros = [
-            ctx_wrapper.context.close() for ctx_wrapper in self.context_wrappers.values()
+        # 只筛选当前断开浏览器对应的上下文，不碰其他浏览器的context
+        target_ctx = [
+            ctx for ctx in self.context_wrappers.values()
+            if ctx.browser_id == browser_id
         ]
-        self.context_wrappers.clear()
+        close_context_coros = [ctx.context.close() for ctx in target_ctx]
+        
+        # 仅清除当前浏览器的上下文，保留其他浏览器正常运行的上下文
+        remove_keys = []
+        for ctx_key, ctx in self.context_wrappers.items():
+            if ctx in target_ctx:
+                remove_keys.append(ctx_key)
+        for key in remove_keys:
+            del self.context_wrappers[key]
+
         with suppress(TargetClosedError):
             await asyncio.gather(*close_context_coros)
-        logger.debug("Browser disconnected")
+        logger.debug("Browser[%s] disconnected, closed its own contexts", browser_id)
         if self.config.restart_disconnected_browser:            
             if browser_id in self.browser_pool:
                 del self.browser_pool[browser_id]
