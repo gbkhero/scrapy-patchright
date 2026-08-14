@@ -285,6 +285,8 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             context_kwargs.pop("cdp_url")
             if 'cdp_kwargs' in context_kwargs:
                 context_kwargs.pop("cdp_kwargs")
+            bw = self.browser_pool[browser_id]
+            browser = bw.browser
             if self.config.cdp_reuse_context:
                 context = browser.contexts[0]
             else:
@@ -292,6 +294,8 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             remote = True
         elif self.config.cdp_url:
             await self._maybe_connect_remote_devtools(browser_id=browser_id)
+            bw = self.browser_pool[browser_id]
+            browser = bw.browser
             if self.config.cdp_reuse_context:
                 context = browser.contexts[0]
             else:
@@ -299,6 +303,8 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             remote = True
         elif self.config.connect_url:
             await self._maybe_connect_remote(browser_id=browser_id)
+            bw = self.browser_pool[browser_id]
+            browser = bw.browser
             if self.config.cdp_reuse_context:
                 context = browser.contexts[0]
             else:
